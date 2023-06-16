@@ -1,0 +1,418 @@
+---
+title: "Brood_manipulation"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lme4)
+library(emmeans)
+library(dplyr)
+library(Rmisc)
+library(ggplot2)
+library(ggpubr)
+library(multimode)
+library(plm)
+library(AER)
+library(MASS)
+```
+
+COLONY MASS
+```{r}
+data <- read.table(file = "brood_data.csv", sep = ",", header = TRUE)
+head(data)
+data$Date <- as.numeric(data$Date)
+data$Treatment <- as.factor(data$Treatment)
+data$Colony <- as.factor(data$Colony)
+
+mass_na <- data[complete.cases(data$Colony.Mass), ]
+
+#series model to estimate the effect of treatment in colony mass accounting for the correlation among the observations overtime
+mass_na_p = pdata.frame(mass_na, index = c("Date", "Colony"))
+model1 = plm(Colony.Mass ~ Treatment, data = mass_na_p)
+summary(model1)
+
+#plot
+data$Date <- as.factor(data$Date)
+data$Date <- factor(data$Date, levels=unique(data$Date))
+summary_colony_mass <- summarySE(data, measurevar="Colony.Mass", groupvars=c("Date","Treatment"), na.rm=TRUE)
+summary_colony_mass <- summary_colony_mass[complete.cases(summary_colony_mass), ]
+ggplot(summary_colony_mass, aes(x=Date, y=Colony.Mass, colour=Treatment)) + 
+  geom_errorbar(aes(ymin=Colony.Mass-se, ymax=Colony.Mass+se), width=.1) +
+  geom_point(position=position_jitter(h=0.15,w=0.15)) +
+  scale_color_manual(values=c("purple4", "aquamarine4","darkgoldenrod2")) +
+  geom_point() + theme_linedraw(base_size = 14) + labs(title = "", 
+                                       x = "Days after the manipulation onset", y = "Colony wet mass (g)")
+```
+
+NEW EGG BATCHES
+```{r}
+egg_batches <- data[complete.cases(data$New.Egg.batches), ]
+egg_batches$Date <- as.factor(egg_batches$Date)
+
+#check if adding Round (described as Repeat in the main text) improves the model fit
+model1 <- lm(New.Egg.batches ~ Treatment * Date, data = egg_batches)
+model2 <- lm(New.Egg.batches ~ Treatment * Date + Round, data = egg_batches)
+anova(model1,model2) # pvalue = 0.1324 - adding Round did NOT significantly improve the model
+
+anova(model1)
+
+#testing if model residuals are normal
+shapiro.test(resid(model1)) # pvalue < 0.006599, residuals are not normal, so I am going to use glm instead
+
+eggBatches_glm <- glm(New.Egg.batches ~ Treatment * Date,family = "poisson", data = egg_batches)
+summary(eggBatches_glm)
+#test for overdispersion (p>0.05 fail to accept the null hypothesis - data are not overdispersed)
+dispersiontest(eggBatches_glm) #p=0.9701 no overdispersion
+
+#post-hoc comparisons using emmeans corrected by Tukey
+emm2 <- emmeans(eggBatches_glm,specs = pairwise ~ Treatment | Date,adjust="Tukey")
+emm2
+
+#plot
+summary_egg_batches <- summarySE(data, measurevar="New.Egg.batches", groupvars=c("Date","Treatment"), na.rm=TRUE)
+summary_egg_batches <- summary_egg_batches[complete.cases(summary_egg_batches), ]
+pd <- position_dodge(0.1)
+ggplot(summary_egg_batches, aes(x=Date, y=New.Egg.batches, colour=Treatment)) + 
+  geom_errorbar(aes(ymin=New.Egg.batches-se, ymax=New.Egg.batches+se), width=.1, position=pd) +
+  scale_color_manual(values=c("purple4", "aquamarine4","darkgoldenrod2")) +
+  geom_point(position=pd) + theme_linedraw(base_size = 14) + labs(title = "", 
+                                                   x = "Days after the manipulation onset", y = "The number of newly-laid egg batches per day")
+```
+
+AGRESSIVE BEHAVIOR BY AND TOWARDS THE QUEEN
+```{r}
+#run with Queen_Agression_Data_pkfs.csv and Queen_Agression_no_outlier.csv files
+data1 <- read.table(file = "Queen_Agression_no_outlier.csv", sep = ",", header = TRUE) 
+head(data1)
+
+data1$Date <- as.factor(data1$Date)
+data1$Round <- as.factor(data1$Round)
+data1$Colony <- as.factor(data1$Colony)
+
+#Total aggression by queen
+#check if adding Round (Repeat) improves the model fit
+model1q <- lmer(Queen_aggression ~ Treatment + (1|Colony), data = data1)
+model2q <- lmer(Queen_aggression ~ Treatment + (1|Colony) + (1|Round), data = data1)
+anova(model1q,model2q) # pvalue = 1 - adding Round did NOT significantly improve the model
+
+#Total aggression towards queen
+#check if adding Round (Repeat) improves the model fit
+model1w <- lmer(Worker_aggression ~ Treatment + (1|Colony), data = data1)
+model2w <- lmer(Worker_aggression ~ Treatment + (1|Colony) + (1|Round), data = data1)
+anova(model1w,model2w) # pvalue = 0.2105 - adding Round did NOT significantly improved the model
+
+#testing if model residuals are normal
+shapiro.test(resid(model1q)) #not normal (aggression by queen)
+shapiro.test(resid(model1w)) #not normal (aggression towards queen)
+
+totalq <- glmer(Queen_aggression ~ Treatment + (1|Colony), family = "poisson", data = data1) 
+summary(totalq)
+emm3 <- emmeans(totalq,specs = pairwise ~ Treatment, adjust="Tukey")
+emm3
+
+totalw <- glmer(Worker_aggression ~ Treatment + (1|Colony), family = "poisson", data = data1)
+summary(totalw)
+emm4 <- emmeans(totalw,specs = pairwise ~ Treatment, adjust="Tukey")
+emm4
+
+#plots
+summary_queen_aggression <- summarySE(data1, measurevar="Queen_aggression", groupvars=c("Treatment"),na.rm = TRUE)
+summary_queen_aggression  <- summary_queen_aggression [complete.cases(summary_queen_aggression), ]
+total_qagr <- ggplot(summary_queen_aggression, aes(x=Treatment, y=Queen_aggression, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Queen_aggression-se, ymax=Queen_aggression+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 3)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +  
+  theme_linedraw() + labs(title = "", x = "", y = "The number of aggressive behaviors\nperformed by the queen in 20 minutes")
+
+summary_worker_aggression<- summarySE(data1, measurevar="Worker_aggression", groupvars=c("Treatment"),na.rm = TRUE)
+summary_worker_aggression <- summary_worker_aggression[complete.cases(summary_worker_aggression), ]
+total_wagr <- ggplot(summary_worker_aggression, aes(x=Treatment, y=Worker_aggression, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Worker_aggression-se, ymax=Worker_aggression+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 3)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +  theme_linedraw() + labs(title = "", x = "", y = "The number of aggressive behaviors\nperformed towards the queen in 20 minutes")
+
+ggarrange(total_qagr, total_wagr,common.legend = TRUE,
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1)
+#ggsave("total_aggression_outliers.png", height = 5, width = 6)
+
+#TOTAL AGGRESSION BY DATE
+data1$Date <- as.factor(data1$Date)
+data1$Date <- factor(data1$Date, levels=unique(data1$Date))
+
+glm_q <- glm(Queen_aggression ~ Treatment * Date, family = "poisson",data = data1)
+dispersiontest(glm_q) #p=0.00627 overdispersed, use negative binomial instead
+glm_qnb <- glm.nb(Queen_aggression ~ Treatment * Date,data = data1)
+emm5 <- emmeans(glm_qnb,specs = pairwise ~ Treatment | Date,adjust="Tukey")
+emm5
+
+glm_w <- glm(Worker_aggression ~ Treatment * Date,family = "poisson", data = data1)
+dispersiontest(glm_w) #p=1.4e-05 overdispersed
+glm_wnb <- glm.nb(Worker_aggression ~ Treatment * Date, data = data1)
+emm6 <- emmeans(glm_wnb,specs = pairwise ~ Treatment | Date,adjust="Tukey")
+emm6
+
+#plots
+summary_worker_aggression<- summarySE(data1, measurevar="Worker_aggression", groupvars=c("Date","Treatment"),na.rm = TRUE)
+summary_worker_aggression <- summary_worker_aggression[complete.cases(summary_worker_aggression), ]
+waggrp <- ggplot(summary_worker_aggression, aes(x = Date, y = Worker_aggression, group = Treatment, color=Treatment)) + 
+  geom_line() + geom_point() +
+  geom_errorbar(aes(ymin=Worker_aggression-se,ymax=Worker_aggression+se), width=.2,
+                position=position_dodge(0.05)) + 
+  scale_color_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +
+  theme_linedraw() + labs(title = "", 
+                          x = "Date", y = "Aggression toward Queen")
+
+summary_queen_aggression <- summarySE(data1, measurevar="Queen_aggression", groupvars=c("Date","Treatment"),na.rm = TRUE)
+summary_queen_aggression  <- summary_queen_aggression [complete.cases(summary_queen_aggression), ]
+qaggp <- ggplot(summary_queen_aggression, aes(x = Date, y = Queen_aggression, group = Treatment, color=Treatment)) + 
+  geom_line() + geom_point() +
+  geom_errorbar(aes(ymin=Queen_aggression-se,ymax=Queen_aggression+se), width=.2,
+                position=position_dodge(0.05)) + 
+                scale_color_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +
+                theme_linedraw() + labs(title = "", 
+                                       x = "Date", y = "Aggression from Queen")
+
+ggarrange(qaggp, waggrp, common.legend = TRUE,
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1)
+#ggsave("aggression__bydate_outliers.png", height = 5, width = 8)
+```
+
+OVARY SIZE
+```{r}
+ovary <- read.table(file = "ovary_sizes.csv", sep = ",", header = TRUE)
+head(ovary)
+ovary$Date <- as.factor(ovary$Date)
+ovary$Date <- factor(ovary$Date, levels=unique(ovary$Date))
+ovary$Round <- as.factor(ovary$Round)
+ovary$Treatment <- as.factor(ovary$Treatment)
+ovary$Colony <- as.factor(ovary$Colony)
+
+ovary_na <- ovary[complete.cases(ovary), ]
+
+#check if adding Round (Repeat) improves the model fit
+model1 <- lmer(Average_oocyte ~ Treatment * Date + (1|Colony), data = ovary_na)
+model2 <- lmer(Average_oocyte ~ Treatment * Date + (1|Colony) + (1|Round), data = ovary_na)
+anova(model1,model2) #p = 0.7769 - round did not improved the model
+
+lmer_ov <- lmer(Average_oocyte ~ Treatment * Date + (1|Colony), data = ovary_na)
+summary(lmer_ov)
+emm7 <- emmeans(lmer_ov,specs = pairwise ~ Treatment | Date,adjust="Tukey")
+emm7
+
+#plot
+summary_ovary <- summarySE(ovary, measurevar="Average_oocyte", groupvars=c("Date","Treatment"), na.rm=TRUE)
+summary_ovary <- summary_ovary[complete.cases(summary_ovary), ]
+ggplot(summary_ovary, aes(x=Date, y=Average_oocyte, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity", width = 0.5) +
+  geom_errorbar(aes(ymin=Average_oocyte-se, ymax=Average_oocyte+se),
+                width=.05,                    # Width of the error bars
+                position=position_dodge(.5)) +
+  geom_text(data = as.data.frame(summary_ovary), aes(label = N),
+            position = position_dodge(0.5), vjust =-5, size = 3) +
+  scale_y_continuous(limits = c(0, 3)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +
+  theme_linedraw(base_size = 14) + labs(title = "", x = "Days after the manipulation onset",
+                                        y = "Average terminal oocyte size in workers (mm)")
+#ggsave(file="oocyte_size1.png", height = 7, width = 10)
+```
+
+TOTAL BROOD AND ADULTS
+```{r}
+data2 <- read.table(file = "total_brood_adults.csv", sep = ",", header = TRUE)
+head(data2)
+
+data2$Round <- as.factor(data2$Round)
+data2$Treatment <- as.factor(data2$Treatment)
+
+#total eggs
+lmeggs <- lm(Eggs ~ Treatment, data = data2) 
+lmeggs1 <- lm(Eggs ~ Treatment + Round, data = data2)
+anova(lmeggs,lmeggs1) #p = 0.7835 round does not improve model
+
+shapiro.test(resid(lmeggs)) #residuals are normal
+emm8 <- emmeans(lmeggs,specs = pairwise ~ Treatment,adjust="Tukey")
+emm8
+
+#total larvae
+lmlarvae <- lm(Larvae ~ Treatment, data = data2) 
+lmlarvae1 <- lm(Larvae ~ Treatment + Round, data = data2) 
+anova(lmlarvae,lmlarvae1) #p = 0.8699 round does not improve model
+
+shapiro.test(resid(lmlarvae)) #residuals are normal
+emm9 <- emmeans(lmlarvae,specs = pairwise ~ Treatment,adjust="Tukey")
+emm9
+
+#total pupae
+lmpupae <- lm(Pupae ~ Treatment, data = data2) 
+lmpupae1 <- lm(Pupae ~ Treatment + Round, data = data2) 
+anova(lmpupae,lmpupae1) #p = 0.5816 round does not improve model
+
+shapiro.test(resid(lmpupae)) #residuals are normal
+emm10 <- emmeans(lmpupae,specs = pairwise ~ Treatment,adjust="Tukey")
+emm10
+
+#total workers
+lmwor <- lm(Total_workers ~ Treatment, data = data2) 
+lmwor1 <- lm(Total_workers ~ Treatment + Round, data = data2) 
+anova(lmwor,lmwor1) #p = 0.5583 round does not improve model
+
+shapiro.test(resid(lmwor)) #residuals are normal
+emm11 <- emmeans(lmwor,specs = pairwise ~ Treatment,adjust="Tukey")
+emm11
+
+#correlation between number of reproductives produced and the number of workers in the colony at the end of the experiment
+cor.test(data2$Total_gynes,data2$Workers_end)
+cor.test(data2$Total_males,data2$Workers_end)
+
+#total males
+lmmal <- lm(Total_males ~ Treatment, data = data2)
+lmmal1 <- lm(Total_males ~ Treatment + Round, data = data2)
+anova(lmmal,lmmal1) #p = 0.1683 round does not improve model
+
+shapiro.test(resid(lmmal)) #residuals are not normal, p < 0.06
+glmmal <- glm(Total_males ~ Treatment, family = "poisson", data = data2)
+summary(glmmal)
+dispersiontest(glmmal) #p=0.01382 overdispersed, change to negative binomial
+
+glmmal_nb <- glm.nb(Total_males ~ Treatment, data = data2)
+summary(glmmal_nb) #AIC 148.62
+emm12 <- emmeans(glmmal_nb,specs = pairwise ~ Treatment,adjust="Tukey")
+emm12
+
+#test effect of number of workers on total males
+glmmalw <- glm.nb(Total_males ~ Treatment + Workers_end, data = data2)
+summary(glmmalw) #AIC 149.05
+emm12a <- emmeans(glmmalw,specs = pairwise ~ Treatment,adjust="Tukey")
+emm12a
+
+#total gynes
+lmgyn <- lm(Total_gynes ~ Treatment, data = data2)
+lmgyn1 <- lm(Total_gynes ~ Treatment + Round, data = data2)
+anova(lmgyn,lmgyn1) #round does improve model
+
+shapiro.test(resid(lmgyn1)) #residuals are normal
+
+lmgyn <- lmer(Total_gynes ~ Treatment + (1|Round), data = data2)
+summary(lmgyn)
+AIC(lmgyn) #AIC 157.9814
+emm13 <- emmeans(lmgyn,specs = pairwise ~ Treatment,adjust="Tukey")
+emm13
+
+#test effect of number of workers on total gynes
+lmgynw <- lmer(Total_gynes ~ Treatment + Workers_end + (1|Round), data = data2)
+summary(lmgynw)
+AIC(lmgynw) #160.169
+emm13a <- emmeans(lmgynw,specs = pairwise ~ Treatment,adjust="Tukey")
+emm13a
+
+#plots total brood
+summary_total_egg <- summarySE(data2, measurevar="Eggs", groupvars=c("Treatment"),na.rm = TRUE)
+total_egg <- ggplot(summary_total_egg, aes(x=Treatment, y=Eggs, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Eggs-se, ymax=Eggs+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 300)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) + 
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of eggs at the end of experiment")
+
+summary_total_larvae<- summarySE(data2, measurevar="Larvae", groupvars=c("Treatment"),na.rm = TRUE)
+total_lar <- ggplot(summary_total_larvae, aes(x=Treatment, y=Larvae, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Larvae-se, ymax=Larvae+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 300)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +    
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of larvae at the end of experiment")
+
+summary_total_pupae<- summarySE(data2, measurevar="Pupae", groupvars=c("Treatment"),na.rm = TRUE)
+total_pup <- ggplot(summary_total_pupae, aes(x=Treatment, y=Pupae, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Pupae-se, ymax=Pupae+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 300)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of pupae at the end of experiment")
+
+ggarrange(total_egg, total_lar, total_pup, common.legend = TRUE,
+          labels = c("A", "B","C"),
+          ncol = 3, nrow = 1)
+
+#plots total adults
+summary_total_workers <- summarySE(data2, measurevar="Total_workers", groupvars=c("Treatment"),na.rm = TRUE)
+total_wor <- ggplot(summary_total_workers, aes(x=Treatment, y=Total_workers, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Total_workers-se, ymax=Total_workers+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 800)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) + 
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of workers at the end of experiment")
+
+summary_total_gynes <- summarySE(data2, measurevar="Total_gynes", groupvars=c("Treatment"),na.rm = TRUE)
+total_gyn <- ggplot(summary_total_gynes, aes(x=Treatment, y=Total_gynes, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Total_gynes-se, ymax=Total_gynes+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 200)) + 
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) + 
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of gynes at the end of experiment")
+
+summary_total_males <- summarySE(data2, measurevar="Total_males", groupvars=c("Treatment"),na.rm = TRUE)
+total_mal <- ggplot(summary_total_males, aes(x=Treatment, y=Total_males, fill=Treatment)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=Total_males-se, ymax=Total_males+se),
+                width=.2,                    # Width of the error bars
+                position=position_dodge(.9)) +
+  scale_y_continuous(limits = c(0, 100)) +
+  scale_fill_manual(values=alpha(c("purple4", "aquamarine4","darkgoldenrod2"), 0.75)) +  
+  theme_linedraw(base_size = 14) + labs(title = "", x = "", y = "The number of males at the end of experiment")
+
+ggarrange(total_wor, total_gyn, total_mal, common.legend = TRUE,
+          labels = c("A", "B","C"),
+          ncol = 3, nrow = 1)
+```
+
+LARVAE BODY MASS
+```{r}
+larvalw <- read.table(file = "larval_weight_data.csv", sep = ",", header = TRUE)
+larvalw$ColonyID <- as.character(larvalw$ColonyID)
+head(larvalw)
+
+#test for multimodality including larvae > 0.100 g
+modetest(larvalw$C_weight) #p = 0.174 does not support more than one mode, do not reject null hypothesis mode = 1
+modetest(larvalw$DB_weight) #p < 2.2e-16 support alternative hypothesis (more than 1 mode) at the 5% level significance
+modetest(larvalw$NB_weight) #p = 0.168 does not support more than one mode, do not reject null hypothesis mode = 1
+
+locmodes(larvalw$C_weight,mod0=1,display=TRUE)
+locmodes(larvalw$DB_weight,mod0=2,display=TRUE)
+locmodes(larvalw$NB_weight,mod0=1,display=TRUE)
+
+#plot
+ggplot(larvalw, aes(All_weight_over100)) +
+  geom_histogram(aes(fill = Treatment, color = Treatment), bins = 60, 
+                 position = "identity", alpha = 0.5) +
+  scale_fill_manual(values=c("purple4", "aquamarine4","darkgoldenrod2")) +
+  scale_color_manual(values=c("purple4", "aquamarine4","darkgoldenrod2")) + 
+  xlim (0,1.5) +ylim (0,90) + theme_bw() + facet_grid(cols = vars(Treatment)) +
+  labs(title = "", 
+       x = "Larval Weight (g)", y = "Count")
+#ggsave("larval_weightover100_per_treatment.png")
+```
